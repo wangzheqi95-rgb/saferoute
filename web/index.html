@@ -1,0 +1,600 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>SafeRoute 風險引擎驗證地圖</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.css" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.js"></script>
+<style>
+  /* 色碼取自 Figma（fileKey=yyQPERYt36339bp5Qj8EwV），見 reports/M7_report.md 對照表 */
+  :root {
+    --bg: #1a1a1a;
+    --panel-bg: #1f1f1f;
+    --border: #333333;
+    --text: #e8e6e3;
+    --text-dim: #9a9894;
+    --accent: #ff6b00;
+    --low: #333333;
+    --medium: #ffa000;
+    --high: #e5383b;
+    --route-green: #00e676;
+  }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, "Noto Sans TC", sans-serif; }
+  #map { position: absolute; top: 0; left: 0; right: 0; bottom: 0; }
+
+  .panel {
+    position: absolute;
+    background: var(--panel-bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+    font-size: 13px;
+  }
+  #search-panel { top: 12px; left: 12px; width: 300px; max-width: calc(100vw - 24px); }
+  #search-panel input { width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px; border: 1px solid var(--border); background: #0d0d0f; color: var(--text); margin-bottom: 6px; }
+  #search-panel .row { display: flex; gap: 6px; margin-bottom: 6px; }
+  #search-panel .row span { color: var(--text-dim); width: 34px; flex-shrink: 0; padding-top: 8px; }
+  #search-results { max-height: 160px; overflow-y: auto; }
+  .search-item { padding: 6px 4px; cursor: pointer; border-bottom: 1px solid var(--border); }
+  .search-item:hover { background: #222; }
+  .search-item .name { color: var(--text); }
+  .search-item .cat { color: var(--text-dim); font-size: 11px; }
+
+  #route-panel { top: 12px; right: 12px; width: 270px; max-width: calc(100vw - 24px); display: none; }
+  #route-panel h3 { margin: 0 0 8px; font-size: 13px; color: var(--accent); display: flex; justify-content: space-between; align-items: center; }
+  #route-close { cursor: pointer; color: var(--text-dim); font-weight: normal; }
+  .route-block { margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+  .route-block:last-child { border-bottom: none; }
+  .route-block .label { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  .route-block .label.tiered { background: conic-gradient(var(--route-green) 0 33%, var(--medium) 33% 66%, var(--high) 66% 100%) !important; }
+  .route-stat { color: var(--text-dim); margin: 2px 0; }
+  .route-risk-callout { margin-top: 4px; font-weight: bold; }
+  .route-risk-callout.ok { color: var(--route-green); }
+  .route-risk-callout.warn { color: var(--high); }
+  #route-note { color: var(--accent); font-weight: bold; margin-top: 6px; }
+
+  #timeline-panel { bottom: 12px; left: 12px; right: 12px; }
+  #timeline-panel .top-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 8px; }
+  #timeline-slider { width: 100%; }
+  #as-of-label { color: var(--accent); font-weight: bold; }
+  #tier-summary span { margin-right: 12px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 4px; }
+  #low-risk-toggle-label { display: inline-flex; align-items: center; gap: 4px; color: var(--text-dim); cursor: pointer; }
+
+  #legend { position: absolute; bottom: 90px; right: 12px; }
+  #legend div { margin: 3px 0; }
+
+  #status-msg { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: var(--accent); color: #1a1a1a; padding: 8px 16px; border-radius: 6px; font-weight: bold; display: none; z-index: 10; }
+
+  .maplibregl-popup-content { background: var(--panel-bg) !important; color: var(--text) !important; border: 1px solid var(--border); }
+  .maplibregl-popup-tip { border-top-color: var(--panel-bg) !important; border-bottom-color: var(--panel-bg) !important; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div id="status-msg"></div>
+
+<div id="search-panel" class="panel">
+  <div class="row"><span>起點</span><input id="from-input" placeholder="定位中...或輸入地點" /></div>
+  <div class="row"><span>終點</span><input id="to-input" placeholder="搜尋學校、捷運站、路名..." /></div>
+  <div id="search-results"></div>
+  <div style="color:var(--text-dim); font-size:11px; margin-top:4px;">點地圖可直接設定起點；輸入文字搜尋終點</div>
+</div>
+
+<div id="route-panel" class="panel"></div>
+
+<div id="legend" class="panel">
+  <div><span class="dot" style="background:var(--medium)"></span>medium</div>
+  <div><span class="dot" style="background:var(--high)"></span>high</div>
+  <div style="color:var(--text-dim); font-size:11px; margin-top:4px;">low 預設隱藏，見下方開關</div>
+</div>
+
+<div id="timeline-panel" class="panel">
+  <div class="top-row">
+    <div>時間軸：<span id="as-of-label">--</span></div>
+    <label id="low-risk-toggle-label"><input type="checkbox" id="low-risk-toggle"> 顯示 low 風險路段</label>
+    <div id="tier-summary">
+      <span><span class="dot" style="background:var(--low)"></span>low <b id="cnt-low">-</b></span>
+      <span><span class="dot" style="background:var(--medium)"></span>medium <b id="cnt-medium">-</b></span>
+      <span><span class="dot" style="background:var(--high)"></span>high <b id="cnt-high">-</b></span>
+      <span>active 事件數 <b id="cnt-events">-</b></span>
+    </div>
+  </div>
+  <input type="range" id="timeline-slider" min="0" max="191" value="191" step="1">
+</div>
+
+<script>
+const API = "";
+const TIMELINE_START = new Date("2026-09-07T00:00:00+08:00");
+
+// 顯示路線時，背景風險線透明度降至此值（對照 config.py ROUTE_MODE_BACKGROUND_OPACITY）
+const ROUTE_MODE_BACKGROUND_OPACITY = 0.3;
+// 路線分段上色（對照 config.py ROUTE_TIER_COLOR_*）
+const ROUTE_TIER_COLOR = { low: "#00e676", medium: "#ffa000", high: "#e5383b" };
+// 事件標記色（對照 config.py EVENT_MARKER_COLOR_*）
+const MARKER_COLOR_HIGH = "#e5383b";
+const MARKER_COLOR_AMBER = "#ffa000";
+
+// 事件類別 -> Lucide 圖示內容（比照 Figma 圖示語意挑選最接近者；不是手繪路徑，是從
+// lucide-static 套件原樣取出的 <path>，對照 config.py EVENT_CATEGORY_ICON）
+const ICON_PATHS = {
+  personal_safety: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z" /> <path d="M12 8v4" /> <path d="M12 16h.01" />',
+  construction: '<rect x="2" y="6" width="20" height="8" rx="1" /> <path d="M17 14v7" /> <path d="M7 14v7" /> <path d="M17 3v3" /> <path d="M7 3v3" /> <path d="M10 14 2.3 6.3" /> <path d="m14 6 7.7 7.7" /> <path d="m8 6 8 8" />',
+  streetlight: '<path d="M16.8 11.2c.8-.9 1.2-2 1.2-3.2a6 6 0 0 0-9.3-5" /> <path d="m2 2 20 20" /> <path d="M6.3 6.3a4.67 4.67 0 0 0 1.2 5.2c.7.7 1.3 1.5 1.5 2.5" /> <path d="M9 18h6" /> <path d="M10 22h4" />',
+  traffic_accident: '<path d="m21 8-2 2-1.5-3.7A2 2 0 0 0 15.646 5H8.4a2 2 0 0 0-1.903 1.257L5 10 3 8" /> <path d="M7 14h.01" /> <path d="M17 14h.01" /> <rect width="18" height="8" x="3" y="10" rx="2" /> <path d="M5 18v2" /> <path d="M19 18v2" />',
+  obstruction: '<path d="M7 16.3c2.2 0 4-1.83 4-4.05 0-1.16-.57-2.26-1.71-3.19S7.29 6.75 7 5.3c-.29 1.45-1.14 2.84-2.29 3.76S3 11.1 3 12.25c0 2.22 1.8 4.05 4 4.05z" /> <path d="M12.56 6.6A10.97 10.97 0 0 0 14 3.02c.5 2.5 2 4.9 4 6.5s3 3.5 3 5.5a6.98 6.98 0 0 1-11.91 4.97" />',
+  crowd: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /> <path d="M16 3.128a4 4 0 0 1 0 7.744" /> <path d="M22 21v-2a4 4 0 0 0-3-3.87" /> <circle cx="9" cy="7" r="4" />',
+  other: '<circle cx="12" cy="12" r="1" /> <circle cx="19" cy="12" r="1" /> <circle cx="5" cy="12" r="1" />',
+};
+const CATEGORY_LABEL = {
+  personal_safety: "人身安全", construction: "道路施工", streetlight: "路燈故障",
+  traffic_accident: "交通事故", obstruction: "積水或障礙", crowd: "人群聚集", other: "其他",
+};
+const MARKER_DIAMETER = 28, MARKER_ICON = 16;
+// zoom < 此值不顯示個別事件標記，改以路段風險線呈現
+const EVENT_MARKER_MIN_ZOOM = 14;
+
+let map, currentAsOf, startCoord = null, endCoord = null, startMarker, endMarker;
+let startIsDefault = false;
+let showLowRisk = false;
+const registeredMarkerImages = new Set();
+
+function asOfFromSlider(v) {
+  return new Date(TIMELINE_START.getTime() + v * 3600 * 1000);
+}
+function asOfIso(d) { return d.toISOString(); }
+function asOfLabel(d) {
+  return d.toLocaleString("zh-TW", { timeZone: "Asia/Taipei", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
+function showStatus(msg, ms) {
+  const el = document.getElementById("status-msg");
+  el.textContent = msg;
+  el.style.display = "block";
+  if (ms) setTimeout(() => { el.style.display = "none"; }, ms);
+}
+
+// ---------------------------------------------------------------------------
+// 事件標記圖片（圓形底 + 白色 Lucide 圖示），依 (category, color) 動態產生並註冊
+// ---------------------------------------------------------------------------
+function markerImageId(category, color) {
+  return `marker-${category}-${color.replace("#", "")}`;
+}
+
+function buildMarkerSvg(color, iconInner) {
+  const offset = (MARKER_DIAMETER - MARKER_ICON) / 2;
+  const scale = MARKER_ICON / 24;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${MARKER_DIAMETER}" height="${MARKER_DIAMETER}" viewBox="0 0 ${MARKER_DIAMETER} ${MARKER_DIAMETER}">
+    <circle cx="${MARKER_DIAMETER/2}" cy="${MARKER_DIAMETER/2}" r="${MARKER_DIAMETER/2}" fill="${color}" />
+    <g transform="translate(${offset},${offset}) scale(${scale})" fill="none" stroke="white" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+      ${iconInner}
+    </g>
+  </svg>`;
+}
+
+async function ensureMarkerImage(category, color) {
+  const id = markerImageId(category, color);
+  if (registeredMarkerImages.has(id) || map.hasImage(id)) return id;
+  const svg = buildMarkerSvg(color, ICON_PATHS[category] || ICON_PATHS.other);
+  const dataUri = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svg)));
+  const px = MARKER_DIAMETER * 2; // 2x 供高解析度螢幕
+
+  const img = new Image();
+  img.src = dataUri;
+  // 用 decode() 而非 onload：MapLibre 的 addImage 需要在圖片「已完成解碼、可安全
+  // drawImage」之後才呼叫，否則 SVG 來源的圖片實測會被讀成空白（onload 觸發時機
+  // 早於可安全點陣化的時機，這裡是先在獨立頁面驗證 SVG 本身沒問題、才抓到這個
+  // 時機差異）。用 canvas 手動點陣化成 ImageData 再交給 addImage，避免依賴
+  // MapLibre 內部如何處理 HTMLImageElement 的不確定性。
+  await img.decode();
+  const canvas = document.createElement("canvas");
+  canvas.width = px;
+  canvas.height = px;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0, px, px);
+  const imageData = ctx.getImageData(0, 0, px, px);
+
+  if (!map.hasImage(id)) map.addImage(id, imageData, { pixelRatio: 2 });
+  registeredMarkerImages.add(id);
+  return id;
+}
+
+async function loadEventMarkers(asOfDate) {
+  const res = await fetch(`${API}/event_markers?as_of=${encodeURIComponent(asOfIso(asOfDate))}`);
+  const data = await res.json();
+
+  await Promise.all(data.markers.map(m => ensureMarkerImage(m.category, m.color)));
+
+  const geojson = {
+    type: "FeatureCollection",
+    features: data.markers.map(m => ({
+      type: "Feature",
+      geometry: { type: "Point", coordinates: [m.lon, m.lat] },
+      properties: { ...m, icon_id: markerImageId(m.category, m.color) },
+    })),
+  };
+
+  if (map.getSource("event-markers")) {
+    map.getSource("event-markers").setData(geojson);
+  } else {
+    // 密度控制：zoom < EVENT_MARKER_MIN_ZOOM 時完全不顯示個別標記（改以路段風險線
+    // 呈現，那個圖層本來就一直存在），用 minzoom 圖層屬性直接讓 MapLibre 在那之前
+    // 不渲染。上一版用 cluster:true 地理聚合，全區尺度時大量叢集圓圈彼此相鄰重疊，
+    // 反而變成蓋住路網的大色塊，這次拿掉；同一路段多個事件改在後端合併成一筆、
+    // 帶 count，這裡只需要在 count>1 時疊一個數字文字。
+    //
+    // 標記尺寸：icon-image 用的是 symbol 圖層，沒有 circle-radius 這個屬性（那是
+    // circle 圖層專用，上一版誤解成兩者互通）。icon-size 是相對於來源圖片邏輯尺寸的
+    // 倍率，不隨地圖 zoom 縮放。來源圖片用 pixelRatio:2 註冊（56 個點陣像素＝28
+    // 邏輯像素），icon-size:1.0 就是螢幕上固定 28px，不管全區或近拍縮放都不變。
+    map.addSource("event-markers", { type: "geojson", data: geojson });
+    map.addLayer({
+      id: "event-markers-layer",
+      type: "symbol",
+      source: "event-markers",
+      minzoom: EVENT_MARKER_MIN_ZOOM,
+      layout: {
+        "icon-image": ["get", "icon_id"],
+        "icon-size": 1.0,
+        "icon-allow-overlap": true,
+        "text-field": ["case", [">", ["get", "count"], 1], ["to-string", ["get", "count"]], ""],
+        "text-font": ["Noto Sans Regular"],
+        "text-size": 11,
+        "text-offset": [0, 1.1],
+        "text-anchor": "top",
+        "text-allow-overlap": true,
+      },
+      paint: {
+        "text-color": "#ffffff",
+        "text-halo-color": "#000000",
+        "text-halo-width": 1.2,
+      },
+    });
+    map.on("click", "event-markers-layer", (e) => {
+      const p = e.features[0].properties;
+      const countLine = p.count > 1 ? `<br>此路段共 ${p.count} 個 active 事件（顯示最嚴重者）` : "";
+      new maplibregl.Popup({ maxWidth: "240px" })
+        .setLngLat(e.lngLat)
+        .setHTML(`<b>${CATEGORY_LABEL[p.category] || p.category}</b><br>severity: ${p.severity}${countLine}`)
+        .addTo(map);
+    });
+    map.on("mouseenter", "event-markers-layer", () => map.getCanvas().style.cursor = "pointer");
+    map.on("mouseleave", "event-markers-layer", () => map.getCanvas().style.cursor = "");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 路段風險圖層
+// ---------------------------------------------------------------------------
+async function loadSegments(asOfDate) {
+  const bounds = map.getBounds();
+  const bbox = [bounds.getWest(), bounds.getSouth(), bounds.getEast(), bounds.getNorth()].join(",");
+  const url = `${API}/segments?bbox=${bbox}&as_of=${encodeURIComponent(asOfIso(asOfDate))}`;
+  const res = await fetch(url);
+  const data = await res.json();
+
+  if (map.getSource("segments")) {
+    map.getSource("segments").setData(data);
+  } else {
+    map.addSource("segments", { type: "geojson", data });
+    map.addLayer({
+      id: "segments-line",
+      type: "line",
+      source: "segments",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        // low 調暗至接近底圖背景色（#1a1a1a），medium/high 用 Figma 提供的色碼，
+        // 兩級之間色相不同（琥珀 vs 紅）確保縮到全區尺度仍可分辨
+        "line-color": ["match", ["get", "display_tier"], "high", "#e5383b", "medium", "#ffa000", "#333333"],
+        // 線寬隨 zoom 調整：縮小時細、放大時粗，避免市區密集處糊成色塊
+        "line-width": ["interpolate", ["linear"], ["zoom"],
+          12, ["match", ["get", "display_tier"], "high", 1.2, "medium", 0.8, 0.4],
+          15, ["match", ["get", "display_tier"], "high", 3, "medium", 2, 0.8],
+          18, ["match", ["get", "display_tier"], "high", 6, "medium", 4, 1.5],
+        ],
+      },
+    });
+    applyLowRiskFilter();
+    map.on("click", "segments-line", onSegmentClick);
+    map.on("mouseenter", "segments-line", () => map.getCanvas().style.cursor = "pointer");
+    map.on("mouseleave", "segments-line", () => map.getCanvas().style.cursor = "");
+  }
+
+  document.getElementById("cnt-low").textContent = data.tier_counts.low;
+  document.getElementById("cnt-medium").textContent = data.tier_counts.medium;
+  document.getElementById("cnt-high").textContent = data.tier_counts.high;
+  document.getElementById("cnt-events").textContent = data.active_event_count;
+}
+
+function applyLowRiskFilter() {
+  if (!map.getLayer("segments-line")) return;
+  map.setFilter("segments-line", showLowRisk ? null : ["!=", ["get", "display_tier"], "low"]);
+}
+
+document.getElementById("low-risk-toggle").addEventListener("change", (e) => {
+  showLowRisk = e.target.checked;
+  applyLowRiskFilter();
+});
+
+async function onSegmentClick(e) {
+  const props = e.features[0].properties;
+  const asOfStr = asOfIso(currentAsOf);
+  const res = await fetch(`${API}/segments/${props.segment_id}/events?as_of=${encodeURIComponent(asOfStr)}`);
+  const data = await res.json();
+
+  let eventsHtml = data.events.length
+    ? data.events.map(ev => `<div style="margin:4px 0;padding:4px;border-left:3px solid var(--accent);">
+        ${CATEGORY_LABEL[ev.category] || ev.category} / ${ev.severity}<br>
+        回報人數：${ev.report_count}　佐證人數：${ev.confirm_count}　current_risk：${ev.current_risk.toFixed(3)}
+      </div>`).join("")
+    : "<div style='color:var(--text-dim)'>此時間點無 active 事件</div>";
+
+  new maplibregl.Popup({ maxWidth: "280px" })
+    .setLngLat(e.lngLat)
+    .setHTML(`
+      <b>${props.name || "(無名稱)"}</b> · ${props.road_type}<br>
+      total_risk: ${props.total_risk.toFixed(3)} (${props.display_tier})<br>
+      realtime_risk: ${props.realtime_risk.toFixed(3)}　baseline_risk: ${props.baseline_risk.toFixed(3)}<br>
+      <hr style="border-color:var(--border)">
+      ${eventsHtml}
+    `)
+    .addTo(map);
+}
+
+async function refreshForAsOf() {
+  const v = parseInt(document.getElementById("timeline-slider").value, 10);
+  currentAsOf = asOfFromSlider(v);
+  document.getElementById("as-of-label").textContent = asOfLabel(currentAsOf) + " (台北時間)";
+  await Promise.all([loadSegments(currentAsOf), loadEventMarkers(currentAsOf)]);
+
+  if (startCoord && endCoord) computeRoute();
+}
+
+async function setDefaultStart(reason) {
+  const res = await fetch(`${API}/default_start`);
+  const data = await res.json();
+  startCoord = [data.lon, data.lat];
+  startIsDefault = true;
+  document.getElementById("from-input").value = data.name + "（預設）";
+  placeMarker("start", startCoord);
+  if (reason) showStatus(reason, 4000);
+}
+
+async function tryGeolocate() {
+  if (!navigator.geolocation) { setDefaultStart("瀏覽器不支援定位，已改用預設起點"); return; }
+  navigator.geolocation.getCurrentPosition(async (pos) => {
+    const lon = pos.coords.longitude, lat = pos.coords.latitude;
+    const res = await fetch(`${API}/service_area_check?lon=${lon}&lat=${lat}`);
+    const check = await res.json();
+    if (check.within_service_area) {
+      startCoord = [lon, lat];
+      startIsDefault = false;
+      document.getElementById("from-input").value = `目前位置 (${lat.toFixed(4)}, ${lon.toFixed(4)})`;
+      placeMarker("start", startCoord);
+    } else {
+      setDefaultStart("目前位置不在服務範圍，已改用預設起點");
+    }
+  }, () => setDefaultStart("無法取得定位權限，已改用預設起點"));
+}
+
+function placeMarker(which, coord) {
+  const color = which === "start" ? "#4caf50" : "#2196f3";
+  const marker = new maplibregl.Marker({ color }).setLngLat(coord).addTo(map);
+  if (which === "start") { if (startMarker) startMarker.remove(); startMarker = marker; }
+  else { if (endMarker) endMarker.remove(); endMarker = marker; }
+}
+
+map = new maplibregl.Map({
+  container: "map",
+  style: {
+    version: 8,
+    // 事件標記數字（count>1 時）需要 glyphs 字型伺服器；用 MapLibre 官方 demo 字型
+    // （免金鑰、公開可用），只用來畫小小的計數文字，不影響底圖本身。
+    glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
+    sources: {
+      "osm-raw": {
+        type: "raster",
+        tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+        tileSize: 256,
+        attribution: '&copy; OpenStreetMap contributors',
+      },
+    },
+    // 深色主題：CARTO Dark Matter 現在要 API key 才能拿掉浮水印（實測發現，見 M7 報告），
+    // 改用標準 OSM 圖磚（免費、無需金鑰）+ MapLibre 原生 raster 上色屬性做暗色處理，
+    // 不用 CSS filter（那樣會連路段線與 marker 一起變色）。
+    layers: [{
+      id: "osm-dark-layer",
+      type: "raster",
+      source: "osm-raw",
+      paint: {
+        "raster-brightness-max": 0.13,
+        "raster-brightness-min": 0.0,
+        "raster-saturation": -0.6,
+        "raster-contrast": 0.3,
+      },
+    }],
+  },
+  center: [121.575, 24.985],
+  zoom: 13,
+});
+
+map.on("load", async () => {
+  await refreshForAsOf();
+  tryGeolocate();
+});
+map.on("moveend", () => loadSegments(currentAsOf));
+
+map.on("click", (e) => {
+  const hits = map.queryRenderedFeatures(e.point, { layers: ["segments-line", "event-markers-layer"] });
+  if (hits.length) return; // 交給對應的 click handler
+  startCoord = [e.lngLat.lng, e.lngLat.lat];
+  startIsDefault = false;
+  document.getElementById("from-input").value = `手動選點 (${e.lngLat.lat.toFixed(4)}, ${e.lngLat.lng.toFixed(4)})`;
+  placeMarker("start", startCoord);
+  if (endCoord) computeRoute();
+});
+
+document.getElementById("timeline-slider").addEventListener("input", refreshForAsOf);
+
+let searchTimer;
+document.getElementById("to-input").addEventListener("input", (e) => {
+  clearTimeout(searchTimer);
+  const q = e.target.value.trim();
+  if (q.length < 1) { document.getElementById("search-results").innerHTML = ""; return; }
+  searchTimer = setTimeout(async () => {
+    const res = await fetch(`${API}/search?q=${encodeURIComponent(q)}`);
+    const data = await res.json();
+    document.getElementById("search-results").innerHTML = data.results.map(r =>
+      `<div class="search-item" data-lon="${r.lon}" data-lat="${r.lat}" data-name="${r.name}">
+        <div class="name">${r.name}</div><div class="cat">${r.category} (${r.kind})</div>
+      </div>`
+    ).join("");
+  }, 250);
+});
+
+document.getElementById("search-results").addEventListener("click", (e) => {
+  const item = e.target.closest(".search-item");
+  if (!item) return;
+  endCoord = [parseFloat(item.dataset.lon), parseFloat(item.dataset.lat)];
+  document.getElementById("to-input").value = item.dataset.name;
+  document.getElementById("search-results").innerHTML = "";
+  placeMarker("end", endCoord);
+  if (startCoord) computeRoute();
+});
+
+// ---------------------------------------------------------------------------
+// 路線
+// ---------------------------------------------------------------------------
+async function computeRoute() {
+  const asOfStr = asOfIso(currentAsOf);
+  const url = `${API}/route?from=${startCoord.join(",")}&to=${endCoord.join(",")}&mode=safe&as_of=${encodeURIComponent(asOfStr)}`;
+  const res = await fetch(url);
+  if (!res.ok) {
+    const err = await res.json();
+    showStatus(err.detail || "路線計算失敗", 4000);
+    return;
+  }
+  const data = await res.json();
+  // 先畫最快路線（綠色虛線）、再畫安心路線（依 tier 分段上色），讓後加入的圖層疊在
+  // 上面——兩條路線常有共用路段，若安心路線先畫、最快路線後畫，重疊處會被最快路線
+  // 的純綠色蓋掉，導致 tier 分段（尤其 high 紅色）在重疊路段完全看不到。
+  await drawFastRoute(data.fast);
+  await drawSafeRoute(data.safe);
+  renderRoutePanel(data);
+  setBackgroundDimmed(true);
+}
+
+function setBackgroundDimmed(dimmed) {
+  if (!map.getLayer("segments-line")) return;
+  map.setPaintProperty("segments-line", "line-opacity", dimmed ? ROUTE_MODE_BACKGROUND_OPACITY : 1.0);
+}
+
+function clearRoute() {
+  for (const id of ["route-safe", "route-fast"]) {
+    if (map.getLayer(`${id}-line`)) map.removeLayer(`${id}-line`);
+    if (map.getSource(id)) map.removeSource(id);
+  }
+  document.getElementById("route-panel").style.display = "none";
+  setBackgroundDimmed(false);
+}
+
+async function fetchSegmentGeom(segmentIds) {
+  // 用目前地圖上已載入的 segments source 找幾何；若不在畫面內範圍則另外查
+  const src = map.getSource("segments");
+  const all = src._data ? src._data.features : [];
+  const map_ = {};
+  for (const f of all) map_[f.properties.segment_id] = f.geometry;
+  const missing = segmentIds.filter(id => !map_[id]);
+  if (missing.length) {
+    const res = await fetch(`${API}/segments`); // fallback：全區（demo 用途，資料量可接受）
+    const data = await res.json();
+    for (const f of data.features) map_[f.properties.segment_id] = f.geometry;
+  }
+  return segmentIds.map(id => map_[id]).filter(Boolean);
+}
+
+async function drawSafeRoute(route) {
+  // 路線分段上色：依所經路段 display_tier 分段著色，交界處靠共用端點自然平滑銜接
+  const geoms = await fetchSegmentGeom(route.segments);
+  const data = {
+    type: "FeatureCollection",
+    features: geoms.map((g, i) => ({ type: "Feature", geometry: g, properties: { tier: route.tiers[i] } })),
+  };
+  if (map.getSource("route-safe")) {
+    map.getSource("route-safe").setData(data);
+  } else {
+    map.addSource("route-safe", { type: "geojson", data });
+    map.addLayer({
+      id: "route-safe-line",
+      type: "line",
+      source: "route-safe",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": ["match", ["get", "tier"], "low", ROUTE_TIER_COLOR.low, "medium", ROUTE_TIER_COLOR.medium, "high", ROUTE_TIER_COLOR.high, ROUTE_TIER_COLOR.low],
+        "line-width": 6,
+      },
+    });
+  }
+}
+
+async function drawFastRoute(route) {
+  // 最快路線維持綠色虛線（依 Figma 原型的線型區分邏輯：用線型而非色相跟安心路線做區隔）
+  const geoms = await fetchSegmentGeom(route.segments);
+  const data = { type: "FeatureCollection", features: geoms.map(g => ({ type: "Feature", geometry: g, properties: {} })) };
+  if (map.getSource("route-fast")) {
+    map.getSource("route-fast").setData(data);
+  } else {
+    map.addSource("route-fast", { type: "geojson", data });
+    map.addLayer({
+      id: "route-fast-line",
+      type: "line",
+      source: "route-fast",
+      layout: { "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": ROUTE_TIER_COLOR.low, // Figma Success/Path 綠 #00E676
+        "line-width": 4,
+        "line-dasharray": [2, 1.5],
+      },
+    });
+  }
+}
+
+function riskCalloutHtml(route) {
+  const highMsg = route.high_length_m > 0
+    ? `此路線有 ${route.high_length_m.toFixed(0)} 公尺經過較高風險路段`
+    : "全程未經過高風險路段";
+  const cls = route.high_length_m > 0 ? "warn" : "ok";
+  return `
+    <div class="route-risk-callout ${cls}">${highMsg}</div>
+    <div class="route-stat">經過 medium 以上路段合計 ${route.medium_plus_length_m.toFixed(0)} 公尺</div>
+  `;
+}
+
+function renderRoutePanel(data) {
+  const panel = document.getElementById("route-panel");
+  panel.style.display = "block";
+  panel.innerHTML = `
+    <h3>路線比較 <span id="route-close">✕</span></h3>
+    <div class="route-block">
+      <span class="label tiered"></span><b>最安心路線</b>
+      <div class="route-stat">距離 ${data.safe.length_m.toFixed(0)} m　約 ${data.safe.walk_time_min.toFixed(1)} 分鐘</div>
+      <div class="route-stat">平均風險 ${data.safe.avg_risk.toFixed(3)}　最高風險 ${data.safe.max_risk.toFixed(3)}</div>
+      ${riskCalloutHtml(data.safe)}
+      <div class="route-stat">與最快路線繞路 ${data.detour_pct.toFixed(1)}%</div>
+    </div>
+    <div class="route-block">
+      <span class="label" style="background:${ROUTE_TIER_COLOR.low}"></span><b>最快路線</b>
+      <div class="route-stat">距離 ${data.fast.length_m.toFixed(0)} m　約 ${data.fast.walk_time_min.toFixed(1)} 分鐘</div>
+      <div class="route-stat">平均風險 ${data.fast.avg_risk.toFixed(3)}　最高風險 ${data.fast.max_risk.toFixed(3)}</div>
+      ${riskCalloutHtml(data.fast)}
+    </div>
+    ${data.note ? `<div id="route-note">${data.note}</div>` : ""}
+  `;
+  document.getElementById("route-close").addEventListener("click", clearRoute);
+}
+</script>
+</body>
+</html>

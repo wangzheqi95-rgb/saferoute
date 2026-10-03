@@ -1,0 +1,14 @@
+APScheduler==3.11.3
+fastapi==0.141.1
+GeoAlchemy2==0.20.0
+geopandas==1.1.4
+networkx==3.6.1
+numpy==2.5.3
+osmnx==2.1.1
+pandas==3.0.5
+psycopg2-binary==2.9.13
+python-dotenv==1.2.3
+scipy==1.18.1
+shapely==2.1.2
+SQLAlchemy==2.0.52
+uvicorn==0.52.4
